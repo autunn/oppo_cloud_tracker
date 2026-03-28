@@ -313,9 +313,6 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
             msg = "not logged in or page redirected unexpectedly"
             raise OppoCloudApiClientAuthenticationError(msg)
 
-        # Wait for the page to finish refreshing GPS locations from phones.
-        # otherwise we get old, server-side cached old data
-
         # Step 1: Wait for the loading overlay (div.device_location) to hide
         try:
             wait.until(
@@ -335,38 +332,30 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
         except TimeoutException:
             LOGGER.warning("Some devices are still updating, continuing anyway")
 
-        # Step 3: Wait for device item to have location info
+        # 新增：模拟点击列表项以触发详情（电量）加载
         try:
-            wait.until(
-                lambda d: (
-                    all(
-                        item.find_elements(By.CSS_SELECTOR, ".device-poi")
-                        or item.find_elements(
-                            By.CSS_SELECTOR,
-                            ".device-status-wrap:not(.positioning)",
-                        )
-                        for item in d.find_elements(
-                            By.CSS_SELECTOR,
-                            "#device-list .device-list ul > li",
-                        )
-                    )
-                    if d.find_elements(
-                        By.CSS_SELECTOR, "#device-list .device-list ul > li"
-                    )
-                    else True
+            device_items = wait.until(
+                expected_conditions.presence_of_all_elements_located(
+                    (By.CSS_SELECTOR, "#device-list .device-list ul > li")
                 )
             )
-        except TimeoutException:
-            LOGGER.warning("Not all device items settled, continuing anyway")
+            if device_items:
+                # 模拟点击第一个设备项
+                driver.execute_script("arguments[0].click();", device_items[0])
+                # 强制等待 3 秒，确保异步电量数据加载并同步到 window.$findVm
+                import time
+                time.sleep(3)
+        except Exception as exception:
+            LOGGER.warning("Failed to click device item for details: %s", exception)
 
         # Now read the fresh data from $findVm
         device_data = driver.execute_script(
             """
-            if (!window.$findVm || !window.$findVm.deviceList || !window.$findVm.points)
+            if (!window.$findVm || !window.$findVm.deviceList)
                 return null;
             return {
                 deviceList: window.$findVm.deviceList,
-                points: window.$findVm.points
+                points: window.$findVm.points || []
             };
             """
         )
@@ -412,7 +401,7 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
             longitude = None
 
             # Method 1: get coordinates from "points"
-            if idx < len(points):
+            if idx < len(points) and points[idx]:
                 point = points[idx]
                 if point and "lat" in point and "lng" in point:
                     try:
@@ -443,6 +432,9 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
                         exception,
                     )
 
+            # 新增：从获取到的详情数据中提取电量字段
+            battery_level = device.get("batteryLevel") or device.get("batteryPercent")
+
             result.append(
                 OppoCloudDevice(
                     device_model=device_model,
@@ -451,6 +443,7 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
                     longitude=longitude,
                     last_seen=last_seen,
                     is_online=is_online,
+                    battery_level=battery_level, # 存入模型
                 )
             )
 
