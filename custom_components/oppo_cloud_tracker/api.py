@@ -305,7 +305,7 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
         except TimeoutException:
             LOGGER.warning("device_location overlay did not hide")
 
-        # 模拟点击列表以在网页渲染电量元素
+        # 【核心修改区】模拟点击列表，并“智能等待”电量元素渲染
         try:
             device_items = wait.until(
                 expected_conditions.presence_of_all_elements_located(
@@ -314,8 +314,19 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
             )
             for item in device_items:
                 driver.execute_script("arguments[0].click();", item)
+                
+                # 智能等待：最长等 8 秒，直到页面的电量元素出现
+                try:
+                    WebDriverWait(driver, 8).until(
+                        expected_conditions.presence_of_element_located((By.CSS_SELECTOR, ".info-battery .count"))
+                    )
+                except TimeoutException:
+                    LOGGER.warning("等待电量元素渲染超时")
+                    pass
+                
+                # 元素出现后，再稍微稳 1 秒，确保 DOM 数据已经填充完毕
                 import time
-                time.sleep(1.5) # 给时间让 HTML 渲染
+                time.sleep(1)
         except Exception as exception:
             LOGGER.warning("Failed to click device item for details: %s", exception)
 
