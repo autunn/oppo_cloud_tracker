@@ -122,5 +122,9 @@ class OppoCloudDeviceTracker(OppoCloudEntity, TrackerEntity):
             # Dont add last_seen attribute because is updates frequently
             attributes["device_model"] = device.device_model
             attributes["is_online"] = str(device.is_online)
+            
+            # 新增：将电量添加到属性
+            if device.battery_level is not None:
+                attributes["battery_level"] = f"{device.battery_level}%"
 
         return attributes
