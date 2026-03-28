@@ -74,7 +74,6 @@ class OppoCloudApiClient:
     async def async_set_keep_browser_session(self, *, keep_session: bool) -> None:
         """Set whether to keep the browser session between updates."""
         self._keep_session = keep_session
-        # If disabling session keeping and we have an active session, clean it up
         if not keep_session and self._driver is not None:
             await self.async_cleanup()
 
@@ -82,7 +81,6 @@ class OppoCloudApiClient:
         """Get existing WebDriver instance or create a new one."""
         if self._driver is not None:
             try:
-                # Check if driver session is still alive
                 _ = self._driver.current_url
             except WebDriverException:
                 self._driver = None
@@ -151,12 +149,11 @@ class OppoCloudApiClient:
     def _login_oppo_cloud(self) -> None:
         """Log in to OPPO Cloud using Selenium (sync)."""
         driver = self._get_or_create_driver()
-        wait = WebDriverWait(driver, 10)  # default timeout
+        wait = WebDriverWait(driver, 10) 
 
         driver.get(CONF_OPPO_CLOUD_LOGIN_URL)
         LOGGER.info("Navigated to OPPO Cloud login page")
 
-        # Click "Sign in" button in the banner
         wait.until(
             expected_conditions.element_to_be_clickable(
                 (
@@ -167,14 +164,12 @@ class OppoCloudApiClient:
             )
         ).click()
 
-        # Wait for login iframe and switch to it
         login_iframe = wait.until(
             expected_conditions.presence_of_element_located((By.CSS_SELECTOR, "iframe"))
         )
         driver.switch_to.frame(login_iframe)
 
         try:
-            # Enter tele and password
             username_el = wait.until(
                 expected_conditions.visibility_of_element_located(
                     (By.CSS_SELECTOR, "input[type='tel']")
@@ -193,7 +188,6 @@ class OppoCloudApiClient:
             password_el.send_keys(Keys.DELETE)
             password_el.send_keys(self._password)
 
-            # Install a passive MutationObserver to capture error messages
             observer_script = """
 window.__capturedErrors = [];
 const regex = /incorrect|error|fail|wrong|invalid/i;
@@ -217,9 +211,6 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
             """
             driver.execute_script(observer_script)
 
-            # It uses custom <div role="button"> instead of native <button>,
-            # and "disabled" state is a CSS class "uc-button-disabled" not an attr.
-            # Wait for the visible Sign In button to lose its disabled class.
             sign_in_btn = wait.until(
                 lambda d: next(
                     (
@@ -233,9 +224,8 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
                     None,
                 )
             )
-            sign_in_btn.click()  # pyright: ignore[reportOptionalMemberAccess]
+            sign_in_btn.click()
 
-            # Handle "Agree and continue" if it pops up
             with contextlib.suppress(TimeoutException):
                 agree_btn = WebDriverWait(driver, 5).until(
                     lambda d: next(
@@ -250,20 +240,16 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
                         None,
                     )
                 )
-                agree_btn.click()  # pyright: ignore[reportOptionalMemberAccess]
+                agree_btn.click()
                 LOGGER.info("Agreed to ToS")
 
-            # URL change: login success signal
-            # driver.current_url always returns main page URL even inside iframe
             try:
                 wait.until(
                     lambda d: not d.current_url.startswith(CONF_OPPO_CLOUD_LOGIN_URL)
                 )
                 LOGGER.info("OPPO Cloud login successful")
             except TimeoutException as exception:
-                # Collect captured errors from iframe MutationObserver
                 captured = driver.execute_script("return window.__capturedErrors || []")
-                # Clean whitespace and duplicates
                 clean_captured = []
                 for s in captured:
                     normalized = " ".join(s.split())
@@ -280,13 +266,11 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
         """Get device location data from OPPO Cloud."""
         try:
             if not self._keep_session:
-                # not keeping session, must login every time
                 await self.async_login_oppo_cloud()
             result = await asyncio.get_running_loop().run_in_executor(
                 None, self._get_devices_data
             )
         except OppoCloudApiClientAuthenticationError:
-            # Not logged in, try to log in
             LOGGER.info("OPPO Cloud not logged in, attempting to log in")
             await self.async_login_oppo_cloud()
             return await self.async_get_data()
@@ -297,7 +281,6 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
             msg = f"Unexpected get_devices_data - {exception}"
             raise OppoCloudApiClientError(msg) from exception
         finally:
-            # If not keeping session, cleanup after data fetch
             if not self._keep_session:
                 await self.async_cleanup()
         return result
@@ -306,14 +289,12 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
         """Get device locations using Selenium WebDriver."""
         driver = self._get_or_create_driver()
         driver.get(CONF_OPPO_CLOUD_FIND_URL)
-        wait = WebDriverWait(driver, 10)  # default timeout
+        wait = WebDriverWait(driver, 10)
 
-        # Check if redirected to login page
         if not driver.current_url.startswith(CONF_OPPO_CLOUD_FIND_URL):
             msg = "not logged in or page redirected unexpectedly"
             raise OppoCloudApiClientAuthenticationError(msg)
 
-        # Step 1: Wait for the loading overlay (div.device_location) to hide
         try:
             wait.until(
                 lambda d: d.find_element(
@@ -322,39 +303,48 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
                 == "none"
             )
         except TimeoutException:
-            LOGGER.warning("device_location overlay did not hide, continuing anyway")
+            LOGGER.warning("device_location overlay did not hide")
 
-        # Step 2: Wait for all "正在更新"spinners to disappear
-        try:
-            WebDriverWait(driver, 30).until(
-                lambda d: not d.find_elements(By.XPATH, "//span[text()='正在更新']")
-            )
-        except TimeoutException:
-            LOGGER.warning("Some devices are still updating, continuing anyway")
-
-        # 新增：模拟点击列表项以触发详情（电量）加载
+        # 模拟点击列表以在网页渲染电量元素
         try:
             device_items = wait.until(
                 expected_conditions.presence_of_all_elements_located(
                     (By.CSS_SELECTOR, "#device-list .device-list ul > li")
                 )
             )
-            if device_items:
-                # 模拟点击第一个设备项
-                driver.execute_script("arguments[0].click();", device_items[0])
-                # 强制等待 3 秒，确保异步电量数据加载并同步到 window.$findVm
+            for item in device_items:
+                driver.execute_script("arguments[0].click();", item)
                 import time
-                time.sleep(3)
+                time.sleep(1.5) # 给时间让 HTML 渲染
         except Exception as exception:
             LOGGER.warning("Failed to click device item for details: %s", exception)
 
-        # Now read the fresh data from $findVm
+        # 注入 JavaScript 从 DOM 抓取电量
         device_data = driver.execute_script(
             """
-            if (!window.$findVm || !window.$findVm.deviceList)
-                return null;
+            if (!window.$findVm || !window.$findVm.deviceList) return null;
+            var devices = JSON.parse(JSON.stringify(window.$findVm.deviceList));
+            
+            var globalBattery = null;
+            var batteryEl = document.querySelector('.info-battery .count');
+            if (batteryEl) {
+                globalBattery = (batteryEl.innerText || batteryEl.textContent).replace('%', '').trim();
+            }
+            
+            for (var i = 0; i < devices.length; i++) {
+                var localBatteryEl = null;
+                var liElems = document.querySelectorAll("#device-list .device-list ul > li");
+                if (liElems && liElems.length > i) {
+                    localBatteryEl = liElems[i].querySelector('.info-battery .count');
+                }
+                if (localBatteryEl) {
+                    devices[i]._domBattery = (localBatteryEl.innerText || localBatteryEl.textContent).replace('%', '').trim();
+                } else if (globalBattery) {
+                    devices[i]._domBattery = globalBattery;
+                }
+            }
             return {
-                deviceList: window.$findVm.deviceList,
+                deviceList: devices,
                 points: window.$findVm.points || []
             };
             """
@@ -368,7 +358,6 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
             device_data["deviceList"], device_data.get("points", [])
         )
 
-        LOGGER.info("Found %d devices in OPPO Cloud", len(devices))
         return devices
 
     def _parse_device_data(
@@ -378,17 +367,12 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
         result: list[OppoCloudDevice] = []
 
         for idx, device in enumerate(devices):
-            # Device model/name
             device_model = device.get("deviceName", "Unknown Device")
-
-            # Check is_online
             is_online = (
                 device.get("onlineStatus") == 1
                 or device.get("locationStatus") == "online"
             )
 
-            # Check location_name and last_seen
-            # "XX地 · 刚刚"
             poi = device.get("poi", "") or device.get("simplePoi", "")
             if "·" in poi:
                 location_name, last_seen = [s.strip() for s in poi.split(" · ", 1)]
@@ -396,44 +380,22 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
                 location_name = poi.strip()
                 last_seen = device.get("poiTime")
 
-            # Check lat/lng
-            latitude = None
-            longitude = None
-
-            # Method 1: get coordinates from "points"
+            latitude, longitude = None, None
             if idx < len(points) and points[idx]:
-                point = points[idx]
-                if point and "lat" in point and "lng" in point:
-                    try:
-                        gcj_lat = point["lat"]
-                        gcj_lng = point["lng"]
-                        latitude, longitude = gcj2wgs(gcj_lat, gcj_lng)
-                    except (KeyError, ValueError, TypeError) as exception:
-                        LOGGER.warning(
-                            "Failed to convert coordinates for %s: %s",
-                            device_model,
-                            exception,
-                        )
-
-            # Method 2: parse from coordinate field
-            # "30.0,120.0"
-            if latitude is None and "coordinate" in device:
                 try:
-                    coord_str = device["coordinate"]
-                    if coord_str and "," in coord_str:
-                        lat_str, lng_str = coord_str.split(",", 1)
-                        gcj_lat = float(lat_str)
-                        gcj_lng = float(lng_str)
-                        latitude, longitude = gcj2wgs(gcj_lat, gcj_lng)
-                except (ValueError, AttributeError) as exception:
-                    LOGGER.warning(
-                        "Failed to parse coordinate field for %s: %s",
-                        device_model,
-                        exception,
-                    )
+                    latitude, longitude = gcj2wgs(points[idx]["lat"], points[idx]["lng"])
+                except Exception:
+                    pass
 
-            # 新增：从获取到的详情数据中提取电量字段
-            battery_level = device.get("batteryLevel") or device.get("batteryPercent")
+            # 提取抓取到的电量
+            battery_level_raw = device.get("_domBattery") or device.get("batteryLevel") or device.get("batteryPercent")
+            
+            battery_level = None
+            if battery_level_raw is not None:
+                try:
+                    battery_level = int(str(battery_level_raw).replace("%", "").strip())
+                except (ValueError, TypeError):
+                    pass
 
             result.append(
                 OppoCloudDevice(
@@ -443,7 +405,7 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
                     longitude=longitude,
                     last_seen=last_seen,
                     is_online=is_online,
-                    battery_level=battery_level, # 存入模型
+                    battery_level=battery_level, 
                 )
             )
 
@@ -467,78 +429,13 @@ observer.observe(document, { childList: true, subtree: true, characterData: true
             body = WebDriverWait(driver, 10).until(
                 expected_conditions.presence_of_element_located((By.TAG_NAME, "body"))
             )
-            LOGGER.info(
-                "Successfully connected to Selenium Grid: %s...", body.text[:50]
-            )
         except Exception:
             self._cleanup_driver()
             raise
         return True
 
-
-# ruff: noqa: T201, I001, PLC0415
-# Debug/testing functionality when run as module
 async def _debug_main() -> None:
-    """Debug main function for testing Selenium client."""
-    import os
-    import sys
-    import logging
-
-    # Set up logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
-
-    # Get configuration from environment variables or defaults
-    username = os.getenv("OPPO_USERNAME")
-    password = os.getenv("OPPO_PASSWORD")
-    remote_browser_url = os.getenv("REMOTE_BROWSER_URL", "http://localhost:4444/wd/hub")
-
-    if username is None or password is None:
-        print("⚠️  Please set OPPO_USERNAME and OPPO_PASSWORD environment variables")
-        print("Example:")
-        print("export OPPO_USERNAME='your_oppo_account'")
-        print("export OPPO_PASSWORD='your_password'")
-        print("export REMOTE_BROWSER_URL='http://localhost:4444/wd/hub'  # Optional")
-        sys.exit(1)
-
-    print("🔧 Testing OPPO Cloud API Client")
-    print(f"   Username: {username}")
-    print(f"   Remote Browser: {remote_browser_url}")
-    print()
-
-    loop = asyncio.get_running_loop()
-    client = OppoCloudApiClient(username, password, remote_browser_url)
-
-    try:
-        # Test 1: Connection test
-        print("    Testing Selenium Grid connection...")
-        connection_ok = await client.async_test_connection()
-        print(f"   ✅ Connection successful: {connection_ok}")
-        print()
-
-        if connection_ok:
-            # Test 2: Get device data
-            print("    Getting device data...")
-            start = loop.time()
-            data = await client.async_get_data()
-            elapsed = loop.time() - start
-            print(f"    Found {len(data)} devices:")
-            for device in data:
-                print(f"     - {device}")
-            print(f"    Fetch time: {elapsed:.3f}s")
-            print()
-
-        print("✅ All tests completed successfully!")
-
-    finally:
-        print("\n🧹 Cleaning up...")
-        await client.async_cleanup()
-        print("   Cleanup completed")
-
+    pass
 
 if __name__ == "__main__":
-    print("🚀 OPPO Cloud Tracker - Selenium API Debug Tool")
-    print("=" * 50)
     asyncio.run(_debug_main())
