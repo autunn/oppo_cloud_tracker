@@ -35,16 +35,4 @@ class OppoCloudDevice:
     longitude: float | None
     last_seen: str | None
     is_online: bool
-
-
-
-@dataclass
-class OppoCloudDevice:
-    """Data for the OPPO Cloud devices."""
-    device_model: str
-    location_name: str
-    latitude: float | None
-    longitude: float | None
-    last_seen: str | None
-    is_online: bool
-    battery_level: int | None = None  
+    battery_level: int | None = None  # 新增：用于存储电量百分比
